@@ -104,6 +104,10 @@ class Settings(BaseSettings):
         default=False,
         description="Disable path validation (allows access to files outside approved directory)",
     )
+    trust_claude_completely: bool = Field(
+        default=False,
+        description="MASTER SWITCH: Completely trust Claude, disables all tool validation",
+    )
 
     # Rate limiting
     rate_limit_requests: int = Field(

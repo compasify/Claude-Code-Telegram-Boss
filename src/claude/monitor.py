@@ -38,6 +38,11 @@ class ToolMonitor:
         user_id: int,
     ) -> Tuple[bool, Optional[str]]:
         """Validate tool call before execution."""
+        # MASTER SWITCH: Skip all validation if Claude is fully trusted
+        if getattr(self.config, "trust_claude_completely", False):
+            self.tool_usage[tool_name] += 1
+            return True, None
+        
         logger.debug(
             "Validating tool call",
             tool_name=tool_name,
