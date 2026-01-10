@@ -696,3 +696,109 @@ class CodeHighlighter:
             return f"```{language}\n{code}\n```"
         else:
             return f"```\n{code}\n```"
+
+
+def parse_claude_question(content: str) -> Optional[dict]:
+    """Parse Claude's response to detect if it contains a question with options.
+    
+    Returns dict with 'question' and 'options' if detected, None otherwise.
+    
+    Detects patterns like:
+    - "Question: ... \n 1. Option A \n 2. Option B"
+    - Lines ending with ? followed by numbered lists
+    - "Would you like to: \n - option1 \n - option2"
+    """
+    if not content:
+        return None
+    
+    # Pattern 1: Explicit numbered options (1. 2. 3. or a) b) c))
+    numbered_pattern = re.compile(
+        r'([^\n]+\?)\s*\n+((?:\s*(?:\d+[\.\)]\s*|[a-z][\.\)]\s*|-\s*).+\n?)+)',
+        re.IGNORECASE
+    )
+    
+    match = numbered_pattern.search(content)
+    if match:
+        question = match.group(1).strip()
+        options_block = match.group(2)
+        
+        # Extract individual options
+        option_pattern = re.compile(r'(?:\d+[\.\)]|[a-z][\.\)]|-)\s*(.+)', re.IGNORECASE)
+        options = option_pattern.findall(options_block)
+        
+        if question and len(options) >= 2:
+            return {
+                'question': question,
+                'options': [opt.strip() for opt in options[:6]],  # Max 6 options
+                'raw_match': match.group(0)
+            }
+    
+    # Pattern 2: "Would you like" / "Do you want" style questions
+    choice_pattern = re.compile(
+        r'((?:would you like|do you want|should i|which (?:one|option)|please (?:choose|select))[^\n?]*\??)\s*\n+((?:\s*(?:\d+[\.\)]\s*|[a-z][\.\)]\s*|-\s*|\*\s*).+\n?)+)',
+        re.IGNORECASE
+    )
+    
+    match = choice_pattern.search(content)
+    if match:
+        question = match.group(1).strip()
+        if not question.endswith('?'):
+            question += '?'
+        options_block = match.group(2)
+        
+        option_pattern = re.compile(r'(?:\d+[\.\)]|[a-z][\.\)]|-|\*)\s*(.+)', re.IGNORECASE)
+        options = option_pattern.findall(options_block)
+        
+        if len(options) >= 2:
+            return {
+                'question': question,
+                'options': [opt.strip() for opt in options[:6]],
+                'raw_match': match.group(0)
+            }
+    
+    return None
+
+
+def format_question_with_options(question_data: dict) -> FormattedMessage:
+    """Format a detected question with inline keyboard buttons.
+    
+    Args:
+        question_data: Dict from parse_claude_question with 'question' and 'options'
+    
+    Returns:
+        FormattedMessage with inline keyboard for options
+    """
+    question = question_data.get('question', '')
+    options = question_data.get('options', [])
+    
+    # Build message text
+    text = f"❓ **Claude hỏi:**\n\n{question}\n\n_Chọn một option bên dưới:_"
+    
+    # Build inline keyboard (2 buttons per row)
+    keyboard = []
+    current_row = []
+    
+    for i, option in enumerate(options):
+        # Truncate option text if too long for button
+        display_text = option[:30] + "..." if len(option) > 30 else option
+        callback_data = f"question_answer:{i}"
+        
+        current_row.append(InlineKeyboardButton(display_text, callback_data=callback_data))
+        
+        if len(current_row) == 2:
+            keyboard.append(current_row)
+            current_row = []
+    
+    # Add any remaining button
+    if current_row:
+        keyboard.append(current_row)
+    
+    # Add custom response option
+    keyboard.append([InlineKeyboardButton("✏️ Trả lời tùy chỉnh", callback_data="question_answer:custom")])
+    
+    return FormattedMessage(
+        text=text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+

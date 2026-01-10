@@ -41,6 +41,7 @@ async def handle_callback_query(
             "conversation": handle_conversation_callback,
             "git": handle_git_callback,
             "export": handle_export_callback,
+            "question_answer": handle_question_answer_callback,
         }
 
         handler = handlers.get(action)
@@ -1151,3 +1152,110 @@ def _format_file_size(size: int) -> str:
             return f"{size:.1f}{unit}" if unit != "B" else f"{size}B"
         size /= 1024
     return f"{size:.1f}TB"
+
+
+async def handle_question_answer_callback(
+    query, answer_param: str, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle user's answer to a Claude question with inline buttons.
+    
+    The answer_param can be:
+    - "0", "1", "2", etc. for numbered options
+    - "custom" for custom text response
+    """
+    user_id = query.from_user.id
+    settings: Settings = context.bot_data["settings"]
+    claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
+    
+    if not claude_integration:
+        await query.edit_message_text(
+            "❌ **Claude Integration Not Available**\n\n"
+            "Cannot process your answer."
+        )
+        return
+    
+    # Get stored question data
+    pending_question = context.user_data.get("pending_question")
+    
+    if not pending_question:
+        await query.edit_message_text(
+            "⚠️ **Hết hạn câu hỏi**\n\n"
+            "Câu hỏi này đã hết hạn hoặc đã được trả lời.\n"
+            "Hãy tiếp tục chat để nhận câu hỏi mới."
+        )
+        return
+    
+    if answer_param == "custom":
+        # Prompt user to type custom response
+        await query.edit_message_text(
+            "✏️ **Trả lời tùy chỉnh**\n\n"
+            f"Câu hỏi: _{pending_question.get('question', 'N/A')}_\n\n"
+            "Hãy gõ câu trả lời của bạn vào chat.\n"
+            "_(Bot sẽ tự động gửi cho Claude)_",
+            parse_mode="Markdown"
+        )
+        # Set flag to expect custom answer
+        context.user_data["awaiting_custom_answer"] = True
+        return
+    
+    try:
+        option_index = int(answer_param)
+        options = pending_question.get("options", [])
+        
+        if option_index < 0 or option_index >= len(options):
+            await query.edit_message_text("❌ Lựa chọn không hợp lệ.")
+            return
+        
+        selected_option = options[option_index]
+    except ValueError:
+        await query.edit_message_text("❌ Lỗi xử lý lựa chọn.")
+        return
+    
+    # Clear pending question
+    context.user_data["pending_question"] = None
+    
+    # Show confirmation
+    await query.edit_message_text(
+        f"✅ **Đã chọn:** {selected_option}\n\n"
+        "🔄 Đang gửi cho Claude...",
+        parse_mode="Markdown"
+    )
+    
+    # Send the answer to Claude as a new prompt
+    current_dir = context.user_data.get(
+        "current_directory", settings.approved_directory
+    )
+    claude_session_id = context.user_data.get("claude_session_id")
+    
+    try:
+        # Construct the answer prompt
+        answer_prompt = f"Tôi chọn: {selected_option}"
+        
+        claude_response = await claude_integration.run_command(
+            prompt=answer_prompt,
+            working_directory=current_dir,
+            user_id=user_id,
+            session_id=claude_session_id,
+        )
+        
+        if claude_response:
+            # Update session ID
+            context.user_data["claude_session_id"] = claude_response.session_id
+            
+            # Send Claude's response
+            response_text = claude_response.content[:3500] if len(claude_response.content) > 3500 else claude_response.content
+            
+            await query.message.reply_text(
+                f"🤖 **Claude:**\n\n{response_text}",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.message.reply_text(
+                "⚠️ Claude không phản hồi. Thử lại sau."
+            )
+            
+    except Exception as e:
+        logger.error("Error sending answer to Claude", error=str(e), user_id=user_id)
+        await query.message.reply_text(
+            f"❌ Lỗi khi gửi câu trả lời: {str(e)}"
+        )

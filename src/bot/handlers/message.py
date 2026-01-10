@@ -226,12 +226,33 @@ async def handle_text_message(
                     logger.warning("Failed to log interaction to storage", error=str(e))
 
             # Format response
-            from ..utils.formatting import ResponseFormatter
+            from ..utils.formatting import ResponseFormatter, parse_claude_question, format_question_with_options
 
             formatter = ResponseFormatter(settings)
-            formatted_messages = formatter.format_claude_response(
-                claude_response.content
-            )
+            
+            # Check if Claude is asking a question with options
+            question_data = parse_claude_question(claude_response.content)
+            if question_data:
+                # Store question data for callback handler
+                context.user_data["pending_question"] = question_data
+                
+                # Clear pending custom answer flag
+                context.user_data["awaiting_custom_answer"] = False
+                
+                # Format as question with inline buttons
+                question_message = format_question_with_options(question_data)
+                formatted_messages = [question_message]
+                
+                logger.info(
+                    "Detected Claude question with options",
+                    user_id=user_id,
+                    question=question_data.get('question', '')[:50],
+                    num_options=len(question_data.get('options', []))
+                )
+            else:
+                formatted_messages = formatter.format_claude_response(
+                    claude_response.content
+                )
 
         except ClaudeToolValidationError as e:
             # Tool validation error with detailed instructions
